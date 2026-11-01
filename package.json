@@ -7,11 +7,17 @@
     "dsh",
     "dsh-plugin",
     "texas-holdem",
+    "holdem",
     "poker",
+    "multiplayer",
     "cloudflare-workers"
   ],
   "license": "MIT",
-  "author": "zhuweiyou",
+  "author": "zhuweiyou <i@zhuweiyou.com> (https://github.com/zhuweiyou)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhuweiyou/dsh-holdem.git"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
