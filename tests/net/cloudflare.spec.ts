@@ -21,7 +21,7 @@ describe('cloudflare packageRoot', () => {
     expect(existsSync(join(root, 'package.json'))).toBe(true)
   })
 
-  it('Windows 盘符路径解析正确，不会出现 "C:\\C:" 这种前缀', () => {
+  it.skipIf(process.platform !== 'win32')('Windows 盘符路径解析正确，不会出现 "C:\\C:" 这种前缀', () => {
     // 模拟 Windows 上 file:// URL 的形态；fileURLToPath 会转成 C:\...
     const fake = 'file:///C:/Users/me/.dsh/profiles/desktop/node_modules/@scope/pkg/lib/index.js'
     const root = packageRoot(fake)
