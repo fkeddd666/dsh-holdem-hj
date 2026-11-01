@@ -1,6 +1,6 @@
 {
   "name": "@zhuweiyou/dsh-holdem",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "德州扑克：6 人桌、超员自动观战、多局排行榜；牌桌可跑在本机或 Cloudflare Worker 上。",
   "keywords": [
     "deepseek-harness",
