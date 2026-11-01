@@ -30,11 +30,11 @@ dsh plugin --profile web add @zhuweiyou/dsh-holdem
 
 ## 界面
 
-![大厅](https://raw.githubusercontent.com/zhuweiyou/dsh-holdem/main/docs/screenshots/lobby.png)
+![大厅](https://raw.githubusercontent.com/zhuweiyou/dsh-holdem/main/assets/lobby.png)
 
-![牌桌](https://raw.githubusercontent.com/zhuweiyou/dsh-holdem/main/docs/screenshots/table.png)
+![牌桌](https://raw.githubusercontent.com/zhuweiyou/dsh-holdem/main/assets/table.png)
 
-![本场结算](https://raw.githubusercontent.com/zhuweiyou/dsh-holdem/main/docs/screenshots/settlement.png)
+![本场结算](https://raw.githubusercontent.com/zhuweiyou/dsh-holdem/main/assets/settlement.png)
 
 ## 怎么玩
 
