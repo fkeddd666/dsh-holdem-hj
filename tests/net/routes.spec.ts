@@ -342,4 +342,36 @@ describe('HTTP 路由', () => {
     expect(ok.status).toBe(200)
     expect(ok.body.duplicate).toBe(false)
   })
+
+  it('加入页对 code/invite 做 XSS 转义，并下发 nonce CSP', async () => {
+    const payload = '</script><script>alert(1)</script>'
+    const page = await fetch(
+      `${base}${prefix}/join?code=${encodeURIComponent(payload)}&invite=${encodeURIComponent(payload)}`,
+    )
+    expect(page.status).toBe(200)
+    const html = await page.text()
+    expect(html).not.toContain('<script>alert(1)</script>')
+    expect(html).toContain('\\u003c/script\\u003e')
+    expect(page.headers.get('content-security-policy')).toContain("script-src 'nonce-")
+    expect(page.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(page.headers.get('x-frame-options')).toBe('DENY')
+  })
+
+  it('带局域网代理标记的请求不被视为本机', async () => {
+    const create = await fetch(`${base}${prefix}/api/rooms`, {
+      method: 'POST',
+      headers: {
+        'x-holdem-proxy': '1',
+        'content-type': 'application/json',
+        'x-requested-with': '@zhuweiyou/dsh-holdem',
+      },
+      body: JSON.stringify({ displayName: 'LAN attacker' }),
+    })
+    expect(create.status).toBe(403)
+
+    const cloudflare = await fetch(`${base}${prefix}/api/cloudflare`, {
+      headers: { 'x-holdem-proxy': '1' },
+    })
+    expect(cloudflare.status).toBe(403)
+  })
 })

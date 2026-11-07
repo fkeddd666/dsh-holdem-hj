@@ -2,8 +2,10 @@
  * 给「不在同一台机器上」的朋友用的独立牌桌页面。
  *
  * 邀请链接指向的就是这里：宿主进程直接把这个页面发给对方浏览器，不需要对方装 DSH、
- * 也不需要 DSH Web UI 的访问令牌——页面自己调 /heldem 的 HTTP 接口（轮询）。
+ * 也不需要 DSH Web UI 的访问令牌——页面自己调 /holdem 的 HTTP 接口（轮询）。
  */
+
+import { escapeHtml } from './html.ts'
 
 export interface PlayPageOptions {
   prefix: string
@@ -12,6 +14,8 @@ export interface PlayPageOptions {
   role: 'auto' | 'sit' | 'watch'
   /** 邀请链接里带了昵称就直接进，不再弹昵称框。 */
   name?: string
+  /** 内联脚本的 CSP nonce。 */
+  nonce?: string
 }
 
 export function playPageHtml(options: PlayPageOptions): string {
@@ -135,7 +139,7 @@ export function playPageHtml(options: PlayPageOptions): string {
   }
 </style>
 </head>
-<body data-prefix="${escapeHtml(options.prefix)}" data-code="${escapeHtml(options.code)}" data-invite="${escapeHtml(options.invite)}" data-role="${role}" data-name="${escapeHtml(options.name ?? '')}">
+<body data-prefix="${escapeHtml(options.prefix)}" data-code="${escapeHtml(options.code)}" data-invite="${escapeHtml(options.invite)}" data-role="${escapeHtml(role)}" data-name="${escapeHtml(options.name ?? '')}">
 <header>
   <h1 id="roomTitle">德州扑克</h1>
   <span class="pill" id="roomCode">房号 ${escapeHtml(options.code)}</span>
@@ -183,7 +187,7 @@ export function playPageHtml(options: PlayPageOptions): string {
     </div>
   </div>
 </div>
-<script>
+<script${options.nonce ? ` nonce="${escapeHtml(options.nonce)}"` : ''}>
 (function () {
   var body = document.body
   var prefix = body.dataset.prefix || '/holdem'
@@ -287,6 +291,13 @@ export function playPageHtml(options: PlayPageOptions): string {
 
   function actionId() {
     if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID()
+    if (window.crypto && window.crypto.getRandomValues) {
+      var bytes = new Uint8Array(16)
+      window.crypto.getRandomValues(bytes)
+      var out = ''
+      for (var i = 0; i < bytes.length; i += 1) out += ('0' + bytes[i].toString(16)).slice(-2)
+      return 'g' + out
+    }
     return 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
   }
 
@@ -698,14 +709,4 @@ export function playPageHtml(options: PlayPageOptions): string {
 </script>
 </body>
 </html>`
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  })[char] ?? char)
 }

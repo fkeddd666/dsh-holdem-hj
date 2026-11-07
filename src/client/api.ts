@@ -50,7 +50,14 @@ async function request<T>(path: string, init: RequestInit = {}, base: string = a
     },
   })
   const text = await response.text()
-  const body = (text ? JSON.parse(text) : {}) as T & { error?: string; message?: string; view?: PlayerView }
+  let body = {} as T & { error?: string; message?: string; view?: PlayerView }
+  if (text) {
+    try {
+      body = JSON.parse(text) as T & { error?: string; message?: string; view?: PlayerView }
+    } catch {
+      if (response.ok) throw new ApiError('invalid-json', '服务器返回了非 JSON 响应', response.status)
+    }
+  }
   if (!response.ok) {
     throw new ApiError(body.error ?? `http-${response.status}`, body.message ?? response.statusText, response.status, body.view)
   }
@@ -159,8 +166,19 @@ export const api = {
   },
 }
 
+let actionSeq = 0
+
 export function newActionId(): string {
   const cryptoObject = globalThis.crypto
   if (cryptoObject?.randomUUID) return cryptoObject.randomUUID()
-  return `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+  if (cryptoObject?.getRandomValues) {
+    const bytes = new Uint8Array(16)
+    cryptoObject.getRandomValues(bytes)
+    let out = ''
+    for (const byte of bytes) out += byte.toString(16).padStart(2, '0')
+    return `a${out}`
+  }
+  // 极老环境：actionId 只用于幂等去重，不参与安全决策，用时间 + 进程内序号即可。
+  actionSeq += 1
+  return `a${Date.now().toString(36)}${actionSeq.toString(36)}`
 }

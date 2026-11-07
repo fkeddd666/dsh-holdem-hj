@@ -3,15 +3,48 @@ import type { IncomingMessage } from 'node:http'
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
 const LOOPBACK_REMOTES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
+/** 局域网代理加的内部标记：客户端传入的同名头会被代理先删除。 */
+export const PROXY_HEADER = 'x-holdem-proxy'
+export const PROXY_HEADER_VALUE = '1'
+
 export function header(req: IncomingMessage, name: string): string | undefined {
   const value = req.headers[name]
   return Array.isArray(value) ? value[0] : value
 }
 
-export function isLoopbackHost(hostHeader: string | undefined, remoteAddress: string | undefined): boolean {
-  const host = (hostHeader ?? '').split(':')[0]?.replace(/^\[|\]$/g, '').toLowerCase()
+function hostnameOf(hostHeader: string | undefined): string {
+  const value = (hostHeader ?? '').trim().toLowerCase()
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']')
+    return end >= 0 ? value.slice(0, end + 1) : value
+  }
+  return value.split(':')[0] ?? ''
+}
+
+/**
+ * 是否来自本机。
+ *
+ * 必须同时满足：Host 是回环地址、TCP 对端也是回环地址、且请求不是经局域网代理转发。
+ * 只看 Host 会被 `Host: 127.0.0.1` 伪造；只看 remoteAddress 会把经代理的局域网请求
+ * 误判成本机（代理到上游的连接来自 127.0.0.1）。
+ */
+export function isLoopbackHost(
+  hostHeader: string | undefined,
+  remoteAddress: string | undefined,
+  proxied = false,
+): boolean {
+  if (proxied) return false
+  const host = hostnameOf(hostHeader)
   const remote = (remoteAddress ?? '').replace(/^::ffff:/, '')
-  return LOOPBACK_HOSTS.has(host ?? '') || LOOPBACK_REMOTES.has(remote)
+  return LOOPBACK_HOSTS.has(host) && LOOPBACK_REMOTES.has(remote)
+}
+
+export function isProxiedRequest(req: IncomingMessage): boolean {
+  return header(req, PROXY_HEADER) === PROXY_HEADER_VALUE
+}
+
+export function isLocalRequest(req: IncomingMessage): boolean {
+  return isLoopbackHost(header(req, 'host'), req.socket.remoteAddress, isProxiedRequest(req))
 }
 
 /** 私有网段（局域网直连）也放行：同 Wi-Fi 的朋友用 http://192.168.x.x:端口 进来。 */

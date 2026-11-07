@@ -27,8 +27,12 @@ export function Settlement({ view }: { view: PlayerView }) {
     const title = summary.title
     const blindLevel = view.room.settings.blindLevel
     const displayName = view.you.displayName
-    await leaveRoom()
-    await createRoom({ title, blindLevel, displayName })
+    try {
+      await leaveRoom()
+      await createRoom({ title, blindLevel, displayName })
+    } catch {
+      // createRoom 内部已经 toast 过错误；这里只避免未捕获的 Promise rejection。
+    }
   }
 
   return (

@@ -28,6 +28,7 @@ export function apply(ctx: Context, config: PluginConfig): void {
     },
     store: createFileStore(),
     lanIp: firstLanIPv4,
+    log: (message) => ctx.logger?.warn?.(`holdem: ${message}`),
   })
 
   const cloudflare = new CloudflareDeployer()
@@ -41,6 +42,8 @@ export function apply(ctx: Context, config: PluginConfig): void {
     }).then((started) => {
       lanProxy = started
       if (started) manager.setLanPort(started.port)
+    }).catch((error: unknown) => {
+      ctx.logger?.warn?.(`holdem: 局域网代理启动失败：${error instanceof Error ? error.message : String(error)}`)
     })
 
     const stopTick = manager.start()

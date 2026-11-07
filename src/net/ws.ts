@@ -1,11 +1,11 @@
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { WebServer } from '@deepseek-ai/cordis'
-import { DISCONNECT_AFTER_MS, MAX_FRAME_BYTES, SUBPROTOCOL } from '../invariant.ts'
+import { DISCONNECT_AFTER_MS, HEARTBEAT_MS, MAX_FRAME_BYTES, SUBPROTOCOL } from '../invariant.ts'
 import type { RoomManager } from '../room/RoomManager.ts'
 import type { PlayerId, RoomId, ServerEvent } from '../types.ts'
 import { assertOrigin } from './auth.ts'
@@ -17,12 +17,17 @@ interface SocketState {
   lastSeen: number
 }
 
-/** 临时诊断日志：WS 升级成功/失败都记一条。 */
+/** 诊断日志默认关闭；开启后也只记录来源/结果，不记录 ticket 或查询串。 */
+const DEBUG = process.env.HOLDEM_DEBUG === '1'
+
 function traceWs(line: Record<string, unknown>): void {
+  if (!DEBUG) return
   try {
-    const dir = join(homedir(), '.dsh', 'holdem')
-    mkdirSync(dir, { recursive: true })
-    appendFileSync(join(dir, 'debug.jsonl'), JSON.stringify({ at: new Date().toISOString(), ws: true, ...line }) + '\n')
+    const dir = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'holdem')
+    const record = JSON.stringify({ at: new Date().toISOString(), ws: true, ...line }) + '\n'
+    void mkdir(dir, { recursive: true })
+      .then(() => appendFile(join(dir, 'debug.jsonl'), record, 'utf8'))
+      .catch(() => undefined)
   } catch {
     // ignore
   }
@@ -53,7 +58,7 @@ export function registerHoldemSocket(server: WebServer, manager: RoomManager): (
       }
       if (socket.readyState === WebSocket.OPEN) socket.ping()
     }
-  }, 15_000)
+  }, HEARTBEAT_MS)
   if (typeof heartbeat === 'object' && 'unref' in heartbeat) heartbeat.unref()
 
   const disposeRoute = server.registerUpgrade({
@@ -129,7 +134,12 @@ export function registerHoldemSocket(server: WebServer, manager: RoomManager): (
 }
 
 function send(ws: WebSocket, event: ServerEvent): void {
-  if (ws.readyState === WebSocket.OPEN) ws.send(encodeJson(event))
+  if (ws.readyState !== WebSocket.OPEN) return
+  try {
+    ws.send(encodeJson(event))
+  } catch {
+    ws.terminate()
+  }
 }
 
 function reject(socket: Duplex, status: string): void {

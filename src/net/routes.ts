@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -11,14 +11,19 @@ import {
   assertOrigin,
   cookieHeader,
   header,
-  isLoopbackHost,
+  isLocalRequest,
   isLoopbackOrigin,
   isPrivateOrigin,
   parseCookies,
 } from './auth.ts'
+import { createNonce, htmlSecurityHeaders, jsonSecurityHeaders } from './html.ts'
 import { encodeJson, readJson } from './json.ts'
 import { joinPageHtml } from './join-page.ts'
 import { playPageHtml } from './play-page.ts'
+import { statusOf } from './status.ts'
+
+/** 诊断日志默认关闭：开启后也只记录路径，不记录含邀请 token 的查询串。 */
+const DEBUG = process.env.HOLDEM_DEBUG === '1'
 
 /** 每个房间一个座位 cookie：同一个浏览器可以同时待在不同房间的多个标签页里。 */
 const SEAT_COOKIE_PREFIX = 'hdm_seat'
@@ -47,26 +52,32 @@ function sessionOf(manager: RoomManager, tokens: string[], roomId?: string) {
   return sessions[0]
 }
 
-/** 临时诊断日志：把每个请求的结果写到 ~/.dsh/holdem/debug.jsonl */
+/**
+ * 诊断日志（HOLDEM_DEBUG=1 时才写）。
+ *
+ * 只记录 path，不记录 query：`/play?invite=<token>` 的 invite 是入座凭证，
+ * 落盘会变成凭据泄露。写入改为异步，避免阻塞请求。
+ */
 function trace(req: IncomingMessage, res: ServerResponse): void {
+  if (!DEBUG) return
   const started = Date.now()
   res.on('finish', () => {
     try {
-      const cookies = Object.keys(parseCookies(req))
       const line = JSON.stringify({
         at: new Date().toISOString(),
         ms: Date.now() - started,
         method: req.method,
-        url: req.url,
+        path: (req.url ?? '/').split('?')[0],
         status: res.statusCode,
         origin: req.headers.origin ?? null,
         host: req.headers.host ?? null,
         fetchSite: req.headers['sec-fetch-site'] ?? null,
-        cookieNames: cookies,
+        cookieNames: Object.keys(parseCookies(req)),
       })
-      const dir = join(homedir(), '.dsh', 'holdem')
-      mkdirSync(dir, { recursive: true })
-      appendFileSync(join(dir, 'debug.jsonl'), line + '\n')
+      const dir = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'holdem')
+      void mkdir(dir, { recursive: true })
+        .then(() => appendFile(join(dir, 'debug.jsonl'), line + '\n', 'utf8'))
+        .catch(() => undefined)
     } catch {
       // 诊断日志失败不影响主流程
     }
@@ -130,24 +141,28 @@ async function handle(
     const cookies = parseCookies(req)
 
     if (req.method === 'GET' && path === `${prefix}/play`) {
+      const nonce = createNonce()
       html(res, playPageHtml({
         prefix,
+        nonce,
         code: String(url.searchParams.get('code') ?? ''),
         invite: String(url.searchParams.get('invite') ?? ''),
         role: playRole(url.searchParams.get('role')),
         name: String(url.searchParams.get('name') ?? ''),
-      }))
+      }), nonce)
       return
     }
 
     if (req.method === 'GET' && (path === prefix || path === `${prefix}/` || path === `${prefix}/join`)) {
       const role = playRole(url.searchParams.get('role'))
+      const nonce = createNonce()
       html(res, joinPageHtml({
         prefix,
+        nonce,
         code: String(url.searchParams.get('code') ?? ''),
         invite: String(url.searchParams.get('invite') ?? ''),
         role,
-      }))
+      }), nonce)
       return
     }
 
@@ -161,7 +176,7 @@ async function handle(
     }
 
     if (req.method === 'GET' && path === `${prefix}/api/health`) {
-      if (!isLoopbackHost(header(req, 'host'), req.socket.remoteAddress)) throw auth('仅本机可查看健康状态')
+      if (!isLocalRequest(req)) throw auth('仅本机可查看健康状态')
       json(res, 200, manager.health())
       return
     }
@@ -174,7 +189,7 @@ async function handle(
       if (req.method === 'POST') {
         assertOrigin(req)
         assertMutatingHeaders(req)
-        if (!isLoopbackHost(header(req, 'host'), req.socket.remoteAddress)) throw auth('只能在本机操作 Cloudflare 授权')
+        if (!isLocalRequest(req)) throw auth('只能在本机操作 Cloudflare 授权')
         const action = url.searchParams.get('action') ?? ''
         if (action === 'login') json(res, 200, cloudflare.startLogin())
         else if (action === 'deploy') json(res, 200, cloudflare.startDeploy())
@@ -183,6 +198,7 @@ async function handle(
         else json(res, 400, { error: 'illegal', message: '未知操作' })
         return
       }
+      if (!isLocalRequest(req)) throw auth('只能在本机查看 Cloudflare 状态')
       json(res, 200, cloudflare.getStatus())
       return
     }
@@ -207,7 +223,7 @@ async function handle(
     if (req.method === 'POST' && path === `${prefix}/api/rooms`) {
       assertOrigin(req)
       assertMutatingHeaders(req)
-      const local = isLoopbackHost(header(req, 'host'), req.socket.remoteAddress)
+      const local = isLocalRequest(req)
       if (!local) throw auth('只能在运行 Harness 的本机开房')
       const body = await readJson<{ title?: string; blindLevel?: string; displayName?: string; browserId?: string }>(req)
       const created = manager.createRoom({
@@ -233,7 +249,7 @@ async function handle(
         roomCode: String(url.searchParams.get('code') ?? ''),
         invite: String(url.searchParams.get('invite') ?? ''),
         role: url.searchParams.get('role') === 'watch' ? 'watch' : 'sit',
-        local: isLoopbackHost(header(req, 'host'), req.socket.remoteAddress),
+        local: isLocalRequest(req),
         browserId: url.searchParams.get('browser') ?? undefined,
         cookies: seatTokens(req, cookies),
       })
@@ -256,7 +272,7 @@ async function handle(
         invite: String(body.invite ?? ''),
         role: body.role === 'watch' ? 'watch' : 'sit',
         displayName: String(body.displayName ?? ''),
-        local: isLoopbackHost(header(req, 'host'), req.socket.remoteAddress),
+        local: isLocalRequest(req),
         browserId: body.browserId,
         cookies: seatTokens(req, cookies),
       })
@@ -369,12 +385,20 @@ function json(res: ServerResponse, status: number, body: unknown, cookies?: stri
   send(res, status, encodeJson(body), headers)
 }
 
-function html(res: ServerResponse, body: string): void {
-  send(res, 200, body, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+function html(res: ServerResponse, body: string, nonce: string): void {
+  send(res, 200, body, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    ...htmlSecurityHeaders(nonce),
+  })
 }
 
 function jsonHeaders(): Record<string, string> {
-  return { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
+  return {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    ...jsonSecurityHeaders(),
+  }
 }
 
 function send(res: ServerResponse, status: number, body: string, headers: Record<string, string | string[]>): void {
@@ -393,12 +417,4 @@ function writeError(res: ServerResponse, error: unknown): void {
   }
   if (code === 'stale' && coded.view) payload.view = coded.view
   send(res, status, encodeJson(payload), jsonHeaders())
-}
-
-function statusOf(code: string): number {
-  if (code === 'auth') return 403
-  if (code === 'room-not-found' || code === 'expired') return 404
-  if (code === 'rate-limited') return 429
-  if (code === 'room-full' || code === 'phase' || code === 'stale' || code === 'already-in-room' || code === 'duplicate-nonce') return 409
-  return 400
 }

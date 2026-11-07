@@ -18,9 +18,13 @@ import type {
 } from '../types.ts'
 import { CommandError, asPlayerId, asRoomId, asSessionId, nowIso } from '../types.ts'
 import {
+  ACTION_RATE_MAX,
+  ACTION_RATE_WINDOW_MS,
+  MAX_CACHED_ACTIONS,
   MAX_CHAT_LINES,
   MAX_HISTORY_HANDS,
   MAX_SEATS,
+  WS_TICKET_TTL_MS,
   CHAT_COOLDOWN_MS,
   HAND_OVER_MIN_MS,
   PRESENCE_TTL_MS,
@@ -189,6 +193,9 @@ export class RoomManager {
   private readonly origin: () => string
   private readonly now: () => number
   private readonly store: HoldemStore
+  private readonly log: (message: string) => void
+  /** 每玩家命令令牌桶：防止 ready/hostKick 等无冷却命令被刷。 */
+  private readonly actionRate = new Map<PlayerId, { count: number; resetAt: number }>()
 
   private readonly rooms = new Map<string, LiveRoom>()
   private readonly roomsByCode = new Map<string, LiveRoom>()
@@ -201,8 +208,8 @@ export class RoomManager {
     this.origin = options.origin
     this.now = options.now ?? (() => Date.now())
     this.store = options.store ?? noopStore
+    this.log = options.log ?? (() => undefined)
     this.lanIp = options.lanIp ?? (() => '')
-    void options.log
   }
 
   getConfig(): ResolvedConfig {
@@ -222,7 +229,15 @@ export class RoomManager {
   }
 
   start(): () => void {
-    const timer = setInterval(() => this.tick(), TICK_MS)
+    // 定时器回调里的异常会变成 uncaughtException，直接带走整个 dsh 进程；
+    // 这里兜底记录，单个房间的异常不应该影响其他房间。
+    const timer = setInterval(() => {
+      try {
+        this.tick()
+      } catch (error) {
+        this.log(`tick failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }, TICK_MS)
     // Node 下别让定时器拖住进程；Workers 里 setInterval 返回数字，没有 unref
     const handle = timer as unknown as { unref?: () => void }
     if (typeof handle === 'object' && typeof handle.unref === 'function') handle.unref()
@@ -235,6 +250,7 @@ export class RoomManager {
     this.sessions.clear()
     this.tickets.clear()
     this.listeners.clear()
+    this.actionRate.clear()
   }
 
   onEvent(listener: (playerId: PlayerId, event: ServerEvent) => void): () => void {
@@ -497,6 +513,7 @@ export class RoomManager {
     if (command.type === 'ping') {
       return { seq: room.seq, view: this.project(room, playerId) }
     }
+    if (!this.allowAction(playerId)) throw new CommandError('rate-limited', '操作太频繁，请稍后再试')
     if (room.phase === 'closed') throw new CommandError('phase', '房间已解散')
     if (baseSeq !== undefined && baseSeq !== room.seq) {
       throw new StaleCommandError('状态已更新，请重试', this.project(room, playerId))
@@ -536,6 +553,11 @@ export class RoomManager {
       }
       case 'ready': {
         if (player.seat === null) throw new CommandError('not-seated', '先入座再准备')
+        // 幂等：状态没变化就不广播，避免刷 ready 造成 O(N²) 广播放大。
+        // 但 sittingOut/autoFold 需要靠 ready=true 复位，这种情况不能提前返回。
+        if (player.ready === command.ready && (command.ready === false || (!player.sittingOut && !player.autoFold))) {
+          return { seq: room.seq, view: this.project(room, playerId) }
+        }
         player.ready = command.ready
         if (command.ready) {
           player.sittingOut = false
@@ -609,7 +631,7 @@ export class RoomManager {
 
     if (cacheKey) {
       room.actionCache.set(cacheKey, room.seq)
-      while (room.actionCache.size > 64) {
+      while (room.actionCache.size > MAX_CACHED_ACTIONS) {
         const oldest = room.actionCache.keys().next().value
         if (oldest === undefined) break
         room.actionCache.delete(oldest)
@@ -629,7 +651,7 @@ export class RoomManager {
 
   issueTicket(playerId: PlayerId, roomId: RoomId): string {
     const ticket = newToken()
-    this.tickets.set(ticket, { playerId, roomId, expiresAt: this.now() + 60_000 })
+    this.tickets.set(ticket, { playerId, roomId, expiresAt: this.now() + WS_TICKET_TTL_MS })
     return ticket
   }
 
@@ -1108,6 +1130,22 @@ export class RoomManager {
     for (const [ticket, entry] of this.tickets) {
       if (entry.expiresAt <= now) this.tickets.delete(ticket)
     }
+    for (const [playerId, entry] of this.actionRate) {
+      if (entry.resetAt <= now) this.actionRate.delete(playerId)
+    }
+  }
+
+  /** 每玩家 10 秒最多 30 条命令；chat 另有 1.2 秒冷却。 */
+  private allowAction(playerId: PlayerId): boolean {
+    const now = this.now()
+    const entry = this.actionRate.get(playerId)
+    if (!entry || now >= entry.resetAt) {
+      this.actionRate.set(playerId, { count: 1, resetAt: now + ACTION_RATE_WINDOW_MS })
+      return true
+    }
+    if (entry.count >= ACTION_RATE_MAX) return false
+    entry.count += 1
+    return true
   }
 
   private existingPlayer(room: LiveRoom, input: PeekInput): LivePlayer | null {

@@ -1,8 +1,12 @@
+import { escapeHtml, jsLiteral } from './html.ts'
+
 export interface JoinPageOptions {
   prefix: string
   code: string
   invite: string
   role: 'auto' | 'sit' | 'watch'
+  /** 内联脚本的 CSP nonce；不传时由路由层拒绝渲染。 */
+  nonce?: string
 }
 
 /**
@@ -59,13 +63,13 @@ export function joinPageHtml(options: JoinPageOptions): string {
   <button class="primary" id="enter" type="button">进入牌桌</button>
   <footer>牌桌地址：${escapeHtml(play)}</footer>
 </div>
-<script>
+<script${options.nonce ? ` nonce="${escapeHtml(options.nonce)}"` : ''}>
 (function () {
-  var prefix = ${JSON.stringify(options.prefix)};
-  var code = ${JSON.stringify(options.code)};
-  var invite = ${JSON.stringify(options.invite)};
-  var role = ${JSON.stringify(options.role)};
-  var target = ${JSON.stringify(play)};
+  var prefix = ${jsLiteral(options.prefix)};
+  var code = ${jsLiteral(options.code)};
+  var invite = ${jsLiteral(options.invite)};
+  var role = ${jsLiteral(options.role)};
+  var target = ${jsLiteral(play)};
   var enter = document.getElementById('enter');
   var error = document.getElementById('error');
   var hint = document.getElementById('hint');
@@ -99,14 +103,4 @@ export function joinPageHtml(options: JoinPageOptions): string {
 </script>
 </body>
 </html>`
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  })[char] ?? char)
 }

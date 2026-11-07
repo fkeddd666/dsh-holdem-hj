@@ -278,6 +278,16 @@ describe('在线状态', () => {
     manager.view(guest.roomId, guest.playerId)
     expect(connectedOf(manager, host, guest.playerId)).toBe(true)
   })
+
+  it('单玩家命令限流：10 秒内第 31 条命令被拒绝', () => {
+    const { manager } = setup()
+    const host = manager.createRoom({ displayName: '房主' })
+    for (let i = 0; i < 30; i += 1) {
+      manager.command(host.roomId, host.hostPlayerId, { type: 'ready', ready: i % 2 === 0 })
+    }
+    expect(() => manager.command(host.roomId, host.hostPlayerId, { type: 'ready', ready: true }))
+      .toThrow(/太频繁/)
+  })
 })
 
 /** 反复用合法动作推进，直到这一手结束。 */

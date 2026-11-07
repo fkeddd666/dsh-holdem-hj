@@ -103,11 +103,36 @@ describe('局域网小代理', () => {
   })
 
   it('局域网来源不算本机：建房 / 部署 Cloudflare 这类操作会被挡住', () => {
-    // 代理会保留原始 Host，所以服务端看到的是局域网地址，不是 127.0.0.1
+    // Host 和 TCP 对端都必须是回环；代理连接来自 127.0.0.1，所以额外标记 proxied。
     expect(isLoopbackHost('192.168.0.103:64670', '192.168.0.103')).toBe(false)
     expect(isLoopbackHost('127.0.0.1:64670', '127.0.0.1')).toBe(true)
+    expect(isLoopbackHost('127.0.0.1:64670', '127.0.0.1', true)).toBe(false)
     // 私有网段允许当作合法 Origin（朋友能加入房间），但不等于本机权限
     expect(isPrivateOrigin('http://192.168.0.103:64670')).toBe(true)
     expect(isPrivateOrigin('http://example.com')).toBe(false)
+  })
+
+  it('经代理的局域网请求不能建房，也不能无邀请入座', async () => {
+    const base = `http://127.0.0.1:${proxy!.port}`
+    const headers = {
+      origin: `http://192.168.0.103:${proxy!.port}`,
+      'content-type': 'application/json',
+      'x-requested-with': '@zhuweiyou/dsh-holdem',
+    }
+    const create = await fetch(`${base}${prefix}/api/rooms`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ displayName: 'LAN attacker' }),
+    })
+    expect(create.status).toBe(403)
+
+    const host = manager.createRoom({ displayName: '房主' })
+    const join = await fetch(`${base}${prefix}/api/join`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ roomCode: host.roomCode, displayName: '无邀请' }),
+    })
+    expect(join.status).not.toBe(200)
+    expect([403, 404]).toContain(join.status)
   })
 })

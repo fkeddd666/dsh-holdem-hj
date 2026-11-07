@@ -12,6 +12,20 @@ function storage(): Storage | undefined {
   }
 }
 
+/** browserId 只用于“同一浏览器已在本房间”去重，不参与授权；优先 CSPRNG。 */
+function randomBrowserId(): string {
+  const cryptoObject = globalThis.crypto
+  if (cryptoObject?.randomUUID) return cryptoObject.randomUUID()
+  if (cryptoObject?.getRandomValues) {
+    const bytes = new Uint8Array(16)
+    cryptoObject.getRandomValues(bytes)
+    let out = 'b'
+    for (const byte of bytes) out += byte.toString(16).padStart(2, '0')
+    return out
+  }
+  return `b${Date.now().toString(36)}`
+}
+
 /** 同一浏览器（同源）稳定 id，用于「这个浏览器已经在这个房间里」判定。 */
 export function browserId(): string {
   if (cached) return cached
@@ -23,7 +37,7 @@ export function browserId(): string {
       cached = existing
       return cached
     }
-    const next = (globalThis.crypto?.randomUUID?.() ?? `b${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`)
+    const next = randomBrowserId()
       .replace(/[^A-Za-z0-9_-]/g, '')
       .slice(0, 64)
     if (!ID_RE.test(next)) return ''

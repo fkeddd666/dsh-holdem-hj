@@ -1,3 +1,5 @@
+import { MAX_CHAT, MAX_DISPLAY_NAME, MAX_TITLE } from '../invariant.ts'
+
 /** 纯 JS 的 SHA-256：Node 和 Cloudflare Workers 都能同步调用。 */
 const K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -128,7 +130,7 @@ export function hashEquals(expectedHex: string, actualHex: string): boolean {
 
 export function sanitizeDisplayName(value: unknown): string {
   const text = String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim()
-  return text.slice(0, 16) || '玩家'
+  return text.slice(0, MAX_DISPLAY_NAME) || '玩家'
 }
 
 export function sanitizeChat(value: unknown): string | null {
@@ -137,10 +139,10 @@ export function sanitizeChat(value: unknown): string | null {
     .replace(/\s+/g, ' ')
     .trim()
   if (text.length === 0) return null
-  return text.slice(0, 80)
+  return text.slice(0, MAX_CHAT)
 }
 
 export function sanitizeTitle(value: unknown): string {
   const text = String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim()
-  return text.slice(0, 24) || '好友牌桌'
+  return text.slice(0, MAX_TITLE) || '好友牌桌'
 }

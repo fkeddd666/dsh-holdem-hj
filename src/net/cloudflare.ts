@@ -103,6 +103,50 @@ export interface WranglerCommand {
 }
 
 /**
+ * 只把 wrangler 真正需要的环境变量传给子进程。
+ *
+ * 之前直接 `{ ...process.env }`，等于把 DSH 的 token、代理变量、其他服务的
+ * API key 全部交给 wrangler（以及可能被 HOLDEM_WRANGLER 指向的任意二进制）。
+ */
+const WRANGLER_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'SystemRoot',
+  'ComSpec',
+  'PATHEXT',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'XDG_CONFIG_HOME',
+  'XDG_CACHE_HOME',
+  'BROWSER',
+  'LANG',
+  'LC_ALL',
+  'NO_COLOR',
+  'CI',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+]
+
+function wranglerEnv(cli: WranglerCommand): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const key of WRANGLER_ENV_KEYS) {
+    const value = process.env[key]
+    if (value !== undefined) env[key] = value
+  }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('CLOUDFLARE_') && value !== undefined) env[key] = value
+  }
+  return { ...env, ...(cli.env ?? {}) }
+}
+
+/**
  * 找一套能跑起来的 wrangler 调用方式，并做一次 `--version` 探活：
  * 1. HOLDEM_WRANGLER 显式指定；
  * 2. PATH 里的 node + 依赖里的 wrangler（正常情况，不依赖全局 wrangler）；
@@ -154,8 +198,8 @@ function wranglerCommand(): WranglerCommand {
     try {
       const probe = spawnSync(candidate.command, [...candidate.baseArgs, '--version'], {
         encoding: 'utf8',
-        timeout: 15_000,
-        env: candidate.env ? { ...process.env, ...candidate.env } : process.env,
+        timeout: 5_000,
+        env: wranglerEnv(candidate),
       })
       if (probe.status === 0) {
         resolvedCommand = candidate
@@ -198,7 +242,7 @@ export function spawnWrangler(
 ): ChildProcessWithoutNullStreams {
   const child = spawn(cli.command, [...cli.baseArgs, ...args], {
     cwd: workingDirectory(),
-    env: cli.env ? { ...process.env, ...cli.env } : process.env,
+    env: wranglerEnv(cli),
   })
   child.stdout.on('data', (chunk: Buffer) => hooks.onData(stripAnsi(chunk.toString())))
   child.stderr.on('data', (chunk: Buffer) => hooks.onData(stripAnsi(chunk.toString())))
@@ -215,11 +259,12 @@ export class CloudflareDeployer {
   private stored = readStored()
   private login: ChildProcessWithoutNullStreams | null = null
   private deploy: ChildProcessWithoutNullStreams | null = null
+  private probe: ChildProcessWithoutNullStreams | null = null
   private authorizeUrl = ''
   private log = ''
   private error = ''
   private checkedAt = 0
-  private authorized = false
+  private authorized = hasWranglerCredentials()
 
   getStatus(): CloudflareStatus {
     this.refreshAuth()
@@ -235,36 +280,53 @@ export class CloudflareDeployer {
     }
   }
 
-  /** 已经授权过就不再反复跑 whoami（60 秒缓存）。 */
+  /**
+   * 已经授权过就不再反复跑 whoami（60 秒缓存）。
+   *
+   * 用异步 spawn 而不是 spawnSync：whoami 最坏要等网络，同步调用会阻塞
+   * 整个 dsh 事件循环数秒。界面每 1.5s 轮询一次，等后台结果即可。
+   */
   private refreshAuth(): void {
-    if (this.login || this.deploy) return
+    if (this.login || this.deploy || this.probe) return
     const now = Date.now()
     if (now - this.checkedAt < 60_000) return
     this.checkedAt = now
     try {
       const cli = wranglerCommand()
-      const result = spawnSync(cli.command, [...cli.baseArgs, 'whoami'], {
-        encoding: 'utf8',
-        timeout: 15_000,
-        env: cli.env ? { ...process.env, ...cli.env } : process.env,
+      let output = ''
+      this.probe = spawnWrangler(cli, ['whoami'], {
+        onData: (text) => {
+          output = `${output}${text}`
+        },
+        onExit: (code) => {
+          this.probe = null
+          this.applyWhoami(output, code)
+        },
+        onError: () => {
+          this.probe = null
+          this.authorized = hasWranglerCredentials()
+        },
       })
-      const output = stripAnsi(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
-      const notLoggedIn = /not logged in|You are not authenticated/i.test(output)
-      if (notLoggedIn) {
-        this.authorized = false
-        return
-      }
-      const email = /associated with the email\s+([^\s.]+(?:\.[^\s.]+)*)/i.exec(output)?.[1]
-      if (email) {
-        this.authorized = true
-        this.stored = { ...this.stored, account: email }
-        return
-      }
-      // whoami 超时或输出不认识：凭据文件在就当已授权，别让界面误报
-      this.authorized = result.status === 0 || hasWranglerCredentials()
     } catch {
+      this.probe = null
       this.authorized = hasWranglerCredentials()
     }
+  }
+
+  private applyWhoami(output: string, code: number | null): void {
+    const notLoggedIn = /not logged in|You are not authenticated/i.test(output)
+    if (notLoggedIn) {
+      this.authorized = false
+      return
+    }
+    const email = /associated with the email\s+([^\s.]+(?:\.[^\s.]+)*)/i.exec(output)?.[1]
+    if (email) {
+      this.authorized = true
+      this.stored = { ...this.stored, account: email }
+      return
+    }
+    // whoami 超时或输出不认识：凭据文件在就当已授权，别让界面误报
+    this.authorized = code === 0 || hasWranglerCredentials()
   }
 
   startLogin(): CloudflareStatus {
@@ -349,12 +411,14 @@ export class CloudflareDeployer {
   }
 
   logout(): CloudflareStatus {
+    this.probe?.kill()
+    this.probe = null
     try {
       const cli = wranglerCommand()
       spawnSync(cli.command, [...cli.baseArgs, 'logout'], {
         encoding: 'utf8',
-        timeout: 10_000,
-        env: cli.env ? { ...process.env, ...cli.env } : process.env,
+        timeout: 5_000,
+        env: wranglerEnv(cli),
       })
     } catch {
       // 忽略
@@ -369,8 +433,10 @@ export class CloudflareDeployer {
   dispose(): void {
     this.login?.kill()
     this.deploy?.kill()
+    this.probe?.kill()
     this.login = null
     this.deploy = null
+    this.probe = null
   }
 }
 

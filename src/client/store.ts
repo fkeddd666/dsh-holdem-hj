@@ -41,31 +41,52 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined
 let toastSeq = 0
 let disposed = false
 
-restoreBackend()
-syncSeatTokens()
-
 const ROOM_KEY = 'holdem:room'
 const SEATS_KEY = 'holdem:seats'
 
-/** 每个标签页自己保存每个房间的座位 token，并同步到请求头。 */
-function readSeats(): Record<string, string> {
+/**
+ * 每个标签页按后端 origin 隔离保存座位 token：
+ * `{ [base]: { [roomId]: token } }`，base 为 `''` 表示本机。
+ * 旧版本的扁平结构 `{ [roomId]: token }` 迁移到本机，不会被发给远端。
+ */
+type SeatBuckets = Record<string, Record<string, string>>
+
+function readSeats(): SeatBuckets {
   try {
     const raw = sessionStorage.getItem(SEATS_KEY)
-    return raw ? (JSON.parse(raw) as Record<string, string>) : {}
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const out: SeatBuckets = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === 'string') {
+        out[''] ??= {}
+        out[''][key] = value
+      } else if (value && typeof value === 'object') {
+        const bucket: Record<string, string> = {}
+        for (const [roomId, token] of Object.entries(value as Record<string, unknown>)) {
+          if (typeof token === 'string' && token !== '') bucket[roomId] = token
+        }
+        out[key] = bucket
+      }
+    }
+    return out
   } catch {
     return {}
   }
 }
 
+/** 只把“当前后端”的 token 同步到请求头，绝不把其他 origin 的 token 发出去。 */
 function syncSeatTokens(): void {
-  setSeatTokens(Object.values(readSeats()))
+  setSeatTokens(Object.values(readSeats()[getApiBase()] ?? {}))
 }
 
 function rememberSeat(roomId: string, token: string): void {
   const seats = readSeats()
-  seats[roomId] = token
-  const ids = Object.keys(seats)
-  for (const stale of ids.slice(0, Math.max(0, ids.length - 5))) delete seats[stale]
+  const base = getApiBase()
+  const bucket = seats[base] ?? (seats[base] = {})
+  bucket[roomId] = token
+  const ids = Object.keys(bucket)
+  for (const stale of ids.slice(0, Math.max(0, ids.length - 5))) delete bucket[stale]
   try {
     sessionStorage.setItem(SEATS_KEY, JSON.stringify(seats))
   } catch {
@@ -158,6 +179,7 @@ export function useBackend(base: string): void {
   } catch {
     // 忽略
   }
+  syncSeatTokens()
 }
 
 export function restoreBackend(): void {
@@ -167,6 +189,7 @@ export function restoreBackend(): void {
   } catch {
     // 忽略
   }
+  syncSeatTokens()
 }
 
 function stopPolling(): void {
@@ -460,3 +483,7 @@ export function errorText(error: unknown): string {
   if (error instanceof Error) return error.message
   return t('error.generic')
 }
+
+// 放在所有常量初始化之后：BASE_KEY/SEATS_KEY 在模块后段才声明，
+// 以前在文件顶部调用会命中 TDZ 并被 try/catch 吞掉，导致刷新后恢复不了后端。
+restoreBackend()

@@ -1,5 +1,24 @@
-import { request as httpRequest, createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import {
+  request as httpRequest,
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http'
 import net from 'node:net'
+import { PROXY_HEADER, PROXY_HEADER_VALUE } from './auth.ts'
+
+/**
+ * 标记请求来自局域网代理，并删掉客户端自己传入的同名头。
+ *
+ * 上游只看 remoteAddress 的话，代理连接永远来自 127.0.0.1，会把局域网用户误判成本机。
+ */
+function proxiedHeaders(req: IncomingMessage): IncomingHttpHeaders {
+  const headers = { ...req.headers }
+  delete headers[PROXY_HEADER]
+  headers[PROXY_HEADER] = PROXY_HEADER_VALUE
+  return headers
+}
 
 /**
  * DSH 的 Web 服务只监听 127.0.0.1，同 Wi-Fi 的朋友连不上。
@@ -31,7 +50,7 @@ export function startLanProxy(options: LanProxyOptions): Promise<LanProxy | null
         port: target.port,
         method: req.method,
         path: req.url,
-        headers: req.headers,
+        headers: proxiedHeaders(req),
       },
       (up) => {
         res.writeHead(up.statusCode ?? 502, up.headers)
@@ -64,7 +83,7 @@ export function startLanProxy(options: LanProxyOptions): Promise<LanProxy | null
     }
     const upstream = net.connect(target.port, target.host, () => {
       const lines = [`GET ${req.url} HTTP/1.1`]
-      const headers = { ...req.headers }
+      const headers = proxiedHeaders(req)
       for (const [key, value] of Object.entries(headers)) {
         if (Array.isArray(value)) for (const item of value) lines.push(`${key}: ${item}`)
         else if (value !== undefined) lines.push(`${key}: ${value}`)
