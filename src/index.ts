@@ -38,6 +38,7 @@ export function apply(ctx: Context, config: PluginConfig): void {
     void startLanProxy({
       targetPort: ctx.webServer.port,
       prefix: resolved.routePrefix,
+      port: resolved.lanPort,
       log: (message) => ctx.logger?.info?.(message),
     }).then((started) => {
       lanProxy = started

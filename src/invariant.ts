@@ -5,6 +5,8 @@ export const CLIENT_ID = '@zhuweiyou/dsh-holdem'
 export const PANEL_KEY = 'holdem'
 export const SUBPROTOCOL = 'holdem.v1'
 export const ROUTE_PREFIX = '/holdem'
+/** 局域网代理默认端口：固定端口便于在 Windows 防火墙里只放行一次。 */
+export const DEFAULT_LAN_PORT = 45567
 
 export const MAX_SEATS = 6
 /** 观战席位默认值；实际值由设置项 maxSpectators 决定。 */

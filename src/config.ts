@@ -1,6 +1,7 @@
 import z from '@deepseek-ai/schemastery'
 import {
   BLIND_LEVELS,
+  DEFAULT_LAN_PORT,
   DEFAULT_MAX_SPECTATORS,
   MAX_ROOMS,
   MAX_SEATS,
@@ -25,6 +26,8 @@ export interface PluginConfig {
   maxRooms?: number
   /** 房主失联多久后自动解散并结算，分钟。 */
   hostIdleDissolveMin?: number
+  /** 局域网代理端口；固定端口便于防火墙放行。 */
+  lanPort?: number
   routePrefix?: string
 }
 
@@ -38,6 +41,7 @@ export const Config = z.object({
   chatEnabled: z.boolean().default(true),
   maxRooms: z.number().default(MAX_ROOMS).min(1).max(64),
   hostIdleDissolveMin: z.number().default(10).min(1).max(120),
+  lanPort: z.number().default(DEFAULT_LAN_PORT).min(1024).max(65535),
   routePrefix: z.string().default(ROUTE_PREFIX),
 })
 
@@ -55,6 +59,7 @@ export interface ResolvedConfig {
   chatEnabled: boolean
   maxRooms: number
   hostIdleDissolveMs: number
+  lanPort: number
   routePrefix: string
 }
 
@@ -84,6 +89,7 @@ export function resolveConfig(config: PluginConfig): ResolvedConfig {
     chatEnabled: config.chatEnabled !== false,
     maxRooms: clamp(Math.trunc(config.maxRooms ?? MAX_ROOMS), 1, 64),
     hostIdleDissolveMs: clamp(config.hostIdleDissolveMin ?? 10, 1, 120) * 60_000,
+    lanPort: clamp(Math.trunc(config.lanPort ?? DEFAULT_LAN_PORT), 1024, 65535),
     routePrefix: normalizePrefix(config.routePrefix ?? ROUTE_PREFIX),
   }
 }
